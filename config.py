@@ -33,6 +33,11 @@ class Settings:
     research_debug: bool = os.getenv("RESEARCH_DEBUG", "false").lower() in {"1", "true", "yes"}
     gemini_api_key: str = os.getenv("GEMINI_API_KEY", os.getenv("GOOGLE_API_KEY", ""))
     gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+    ai_mode: str = os.getenv("BWC_AI_MODE", "none").lower()
+    ollama_url: str = os.getenv("BWC_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
+    ollama_model: str = os.getenv("BWC_OLLAMA_MODEL", "llama3.2:1b")
+    ai_timeout: int = int(os.getenv("BWC_AI_TIMEOUT", "60"))
+    ai_max_input_chars: int = int(os.getenv("BWC_AI_MAX_INPUT_CHARS", "30000"))
 
 
 settings = Settings()

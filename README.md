@@ -44,6 +44,22 @@ Environment variables are loaded from `.env`:
 - `GEMINI_API_KEY` or `GOOGLE_API_KEY`: optional Google AI Studio key for Gemini + Google Search grounding
 - `GEMINI_MODEL`: optional Gemini model, default `gemini-2.0-flash`
 
+## Local AI with Ollama
+
+BWC also supports an optional local AI enrichment layer powered by a locally running Ollama server. This is entirely optional and disabled by default. Set the environment variables in `.env` or your shell before launching Streamlit:
+
+```env
+BWC_AI_MODE=ollama
+BWC_OLLAMA_URL=http://127.0.0.1:11434
+BWC_OLLAMA_MODEL=llama3.2:1b
+BWC_AI_TIMEOUT=60
+BWC_AI_MAX_INPUT_CHARS=30000
+```
+
+The deterministic BWC research and scoring flow remains authoritative. Ollama does not replace the deterministic qualification; it enriches it with explanation, evidence interpretation, and sales intelligence. If Ollama is unavailable, the application keeps showing the normal research and scoring results. For a local Ollama server, use `BWC_OLLAMA_URL=http://127.0.0.1:11434`. For a different reachable host, use `BWC_OLLAMA_URL=http://HOST:11434`.
+
+When `BWC_AI_MODE=none`, the app works exactly as before and requires no local AI service. When `BWC_AI_MODE=ollama`, the UI will show the optional AI section after the deterministic score and sales brief if the configured model is reachable and available.
+
 No API keys are stored in source code. Add provider credentials to `.env` or Streamlit secrets.
 
 ## Optional SearXNG

@@ -7,6 +7,7 @@ import streamlit as st
 from config import settings
 from crm import accounts_csv, contact_template_csv, contacts_csv, import_accounts_csv, import_contacts_csv, PIPELINE_STATUSES, list_accounts, list_contacts, list_prospects, save_account, save_contact, save_prospect
 from data import Confidence, Opportunity, TriState
+from local_ai import check_ollama, generate_sales_intelligence, ollama_enabled
 from research import research_company
 from sales_action import build_sales_action
 from scoring import qualify_company
@@ -60,6 +61,18 @@ with st.sidebar:
     st.checkbox("Show evidence", value=True)
     st.checkbox("Include unknown signals", value=True)
     st.divider()
+    st.markdown("### Local AI")
+    st.markdown(f"Mode: {'Disabled' if settings.ai_mode == 'none' else 'Ollama'}")
+    st.markdown(f"Model: {settings.ollama_model}")
+    st.markdown(f"Ollama URL: {settings.ollama_url}")
+    if st.button("Test Ollama Connection", key="test_ollama_connection"):
+        health = check_ollama()
+        if health.get("available") and health.get("model_available"):
+            st.success("✓ Ollama connected")
+        else:
+            st.warning("⚠ Ollama unavailable")
+        st.caption(health.get("message", "Local AI unavailable"))
+    st.divider()
     st.caption("Evidence is directional and should be verified before outreach.")
 
 st.markdown('<div class="hero"><div class="eyebrow">Brainwave Consulting</div><h1>BWC Sales Intelligence</h1><p>Turn a company name into a transparent, evidence-led qualification brief for PLM, engineering data, MSDS, and formulation conversations.</p></div>', unsafe_allow_html=True)
@@ -102,6 +115,16 @@ if submitted:
             st.session_state["result"] = result
             st.session_state["qualification"] = qualification
             st.session_state["normalized_name"] = normalize_company_name(company_name)
+            st.session_state.pop("ai_sales_intelligence", None)
+            if settings.ai_mode == "ollama":
+                health = check_ollama()
+                if health.get("available") and health.get("model_available"):
+                    ai_result = generate_sales_intelligence(result, qualification)
+                    st.session_state["ai_sales_intelligence"] = ai_result
+                else:
+                    st.session_state["ai_sales_intelligence"] = {}
+            else:
+                st.session_state["ai_sales_intelligence"] = {}
             research_status.update(label="Research complete", state="complete", expanded=False)
         except Exception as error:
             research_status.update(label="Research failed", state="error", expanded=True)
@@ -432,6 +455,59 @@ with matrix_col:
 
 st.markdown("### Priority matrix")
 st.info(sales_action.priority_matrix)
+
+st.markdown("### Local AI Sales Intelligence")
+health = check_ollama() if settings.ai_mode == "ollama" else {"available": False, "model_available": False, "message": "Local AI is disabled. Set BWC_AI_MODE=ollama to enable Ollama."}
+if settings.ai_mode == "none":
+    st.info("Local AI is disabled.\nSet BWC_AI_MODE=ollama to enable Ollama.")
+elif not health.get("available") or not health.get("model_available"):
+    st.warning("Local AI unavailable — showing deterministic BWC qualification only.")
+    st.caption(health.get("message", "Local AI unavailable"))
+else:
+    st.success("Local AI available")
+    ai = st.session_state.get("ai_sales_intelligence")
+    if not isinstance(ai, dict) or not ai:
+        ai = generate_sales_intelligence(result, qualification)
+        st.session_state["ai_sales_intelligence"] = ai
+    if st.button("Regenerate AI Analysis", key="regenerate_ai_analysis"):
+        ai = generate_sales_intelligence(result, qualification)
+        st.session_state["ai_sales_intelligence"] = ai
+    # Render key fields in a compact, non-breaking section.
+    st.markdown("**Executive Summary**")
+    st.markdown(ai.get("executive_summary") or "")
+    st.markdown("**Why This Company May Be Worth Calling**")
+    st.markdown(ai.get("why_worth_calling") or "")
+    st.markdown("**PLM/PDM Opportunity**")
+    st.markdown(ai.get("plm_pdm_opportunity") or "")
+    st.markdown("**MSDS Opportunity**")
+    st.markdown(ai.get("msds_opportunity") or "")
+    st.markdown("**Formulation Opportunity**")
+    st.markdown(ai.get("formulation_opportunity") or "")
+    st.markdown("**Greenfield Assessment**")
+    st.markdown(ai.get("greenfield_assessment") or "")
+    st.markdown("**Recommended Persona**")
+    st.markdown(ai.get("recommended_persona") or "")
+    st.markdown("**Recommended Call Angle**")
+    st.markdown(ai.get("recommended_call_angle") or "")
+    st.markdown("**Recommended Next Step**")
+    st.markdown(ai.get("recommended_next_step") or "")
+    st.markdown("**AI Confidence**")
+    st.markdown(ai.get("confidence") or "")
+    with st.expander("Key evidence", expanded=False):
+        for item in ai.get("key_evidence") or []:
+            st.markdown(f"- {item}")
+    with st.expander("Risks / Unknowns", expanded=False):
+        for item in ai.get("risks_or_unknowns") or []:
+            st.markdown(f"- {item}")
+    with st.expander("Likely pain points", expanded=False):
+        for item in ai.get("likely_pain_points") or []:
+            st.markdown(f"- {item}")
+    with st.expander("Discovery questions", expanded=False):
+        for item in ai.get("discovery_questions") or []:
+            st.markdown(f"- {item}")
+    with st.expander("Sales talking points", expanded=False):
+        for item in ai.get("sales_talking_points") or []:
+            st.markdown(f"- {item}")
 
 with st.expander("Evidence and sources", expanded=True):
     if result.research_note:
