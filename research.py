@@ -1386,7 +1386,7 @@ class LiveResearchProvider(CompanyResearchProvider):
         except ValueError:
             return "Unknown"
 
-    def research_company(self, company_name: str) -> ResearchResult:
+    def research_company(self, company_name: str, provided_evidence: str = "") -> ResearchResult:
         requested_name = company_name.strip()
         if not requested_name:
             raise ValueError("Company name is required.")
@@ -1666,7 +1666,7 @@ class DemoResearchProvider(CompanyResearchProvider):
 
     name = "Demo research provider"
 
-    def research_company(self, company_name: str) -> ResearchResult:
+    def research_company(self, company_name: str, provided_evidence: str = "") -> ResearchResult:
         normalized = normalize_company_name(company_name)
         if normalized == "tata motors":
             return ResearchResult(
@@ -1728,5 +1728,5 @@ def get_research_provider() -> CompanyResearchProvider:
     return provider_class()
 
 
-def research_company(company_name: str) -> ResearchResult:
-    return get_research_provider().research_company(company_name)
+def research_company(company_name: str, provided_evidence: str = "") -> ResearchResult:
+    return get_research_provider().research_company(company_name, provided_evidence=provided_evidence)

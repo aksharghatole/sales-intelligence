@@ -7,7 +7,7 @@ import streamlit as st
 from config import settings
 from crm import accounts_csv, contact_template_csv, contacts_csv, import_accounts_csv, import_contacts_csv, PIPELINE_STATUSES, list_accounts, list_contacts, list_prospects, save_account, save_contact, save_prospect
 from data import Confidence, Opportunity, TriState
-from local_ai import check_ollama, generate_sales_intelligence, ollama_enabled
+from local_ai import check_ollama, diagnose_ollama, generate_sales_intelligence, ollama_enabled, test_generation
 from research import research_company
 from sales_action import build_sales_action
 from scoring import qualify_company
@@ -64,7 +64,15 @@ with st.sidebar:
     st.markdown("### Local AI")
     st.markdown(f"Mode: {'Disabled' if settings.ai_mode == 'none' else 'Ollama'}")
     st.markdown(f"Model: {settings.ollama_model}")
-    st.markdown(f"Ollama URL: {settings.ollama_url}")
+    st.markdown(f"Endpoint: {settings.ollama_url}")
+    if settings.ai_mode == "ollama":
+        diagnostic = diagnose_ollama()
+        env_label = diagnostic.get("environment", "remote")
+        status_label = "Connected" if diagnostic.get("reachable") and diagnostic.get("model_available") else "Not reachable"
+        st.markdown(f"Connection: {status_label}")
+        st.markdown(f"Environment: {env_label}")
+        if diagnostic.get("environment") == "private":
+            st.caption("This private/local endpoint may be reachable only on your local network or VPN. A GitHub Codespace usually cannot reach a phone hotspot IP directly.")
     if st.button("Test Ollama Connection", key="test_ollama_connection"):
         health = check_ollama()
         if health.get("available") and health.get("model_available"):
@@ -72,10 +80,27 @@ with st.sidebar:
         else:
             st.warning("⚠ Ollama unavailable")
         st.caption(health.get("message", "Local AI unavailable"))
+        if health.get("model_available"):
+            st.caption("Configured model exists: yes")
+        else:
+            st.caption("Configured model exists: no")
+    if settings.ai_mode == "ollama":
+        if st.button("Test Generation", key="test_generation_button"):
+            tiny = test_generation("Reply with exactly: BWC Ollama connection working.")
+            if tiny.get("success"):
+                st.success("✓ Tiny generation succeeded")
+            else:
+                st.warning("⚠ Tiny generation failed")
+            st.caption(tiny.get("message", "Generation test not run"))
+            if tiny.get("response"):
+                st.code(tiny.get("response"))
+            st.caption(f"Elapsed: {tiny.get('elapsed', 0.0):.3f}s")
     st.divider()
     st.caption("Evidence is directional and should be verified before outreach.")
 
 st.markdown('<div class="hero"><div class="eyebrow">Brainwave Consulting</div><h1>BWC Sales Intelligence</h1><p>Turn a company name into a transparent, evidence-led qualification brief for PLM, engineering data, MSDS, and formulation conversations.</p></div>', unsafe_allow_html=True)
+
+provided_evidence = ""
 
 with st.form("research_form"):
     search_col, button_col = st.columns([5, 1], vertical_alignment="bottom")
@@ -457,14 +482,22 @@ st.markdown("### Priority matrix")
 st.info(sales_action.priority_matrix)
 
 st.markdown("### Local AI Sales Intelligence")
-health = check_ollama() if settings.ai_mode == "ollama" else {"available": False, "model_available": False, "message": "Local AI is disabled. Set BWC_AI_MODE=ollama to enable Ollama."}
+health = check_ollama() if settings.ai_mode == "ollama" else {"available": False, "model_available": False, "message": "Local AI is disabled. Set BWC_AI_MODE=ollama to enable Ollama.", "environment": "remote"}
 if settings.ai_mode == "none":
     st.info("Local AI is disabled.\nSet BWC_AI_MODE=ollama to enable Ollama.")
 elif not health.get("available") or not health.get("model_available"):
+    diagnostic = diagnose_ollama()
     st.warning("Local AI unavailable — showing deterministic BWC qualification only.")
-    st.caption(health.get("message", "Local AI unavailable"))
+    st.caption(diagnostic.get("message", "Local AI unavailable"))
+    env = diagnostic.get("environment", "remote")
+    if env == "private":
+        st.caption("Your Ollama endpoint is on a private network. A GitHub Codespace cannot normally reach your phone's hotspot IP directly. Use a secure VPN/private tunnel or run Ollama somewhere reachable by the Codespace.")
+    if diagnostic.get("error_type") == "connection_refused":
+        st.caption("Connection refused: Ollama server is not listening on the configured address/port.")
 else:
+    diagnostic = diagnose_ollama()
     st.success("Local AI available")
+    st.caption(f"Mode: Ollama | Model: {settings.ollama_model} | Endpoint: configured | Connection: {'Connected' if diagnostic.get('reachable') else 'Not reachable'} | Environment: {diagnostic.get('environment', 'remote')}")
     ai = st.session_state.get("ai_sales_intelligence")
     if not isinstance(ai, dict) or not ai:
         ai = generate_sales_intelligence(result, qualification)

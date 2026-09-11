@@ -36,6 +36,7 @@ class Settings:
     ai_mode: str = os.getenv("BWC_AI_MODE", "none").lower()
     ollama_url: str = os.getenv("BWC_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
     ollama_model: str = os.getenv("BWC_OLLAMA_MODEL", "llama3.2:1b")
+    ollama_proxy: str = os.getenv("BWC_OLLAMA_PROXY", "").strip()
     ai_timeout: int = int(os.getenv("BWC_AI_TIMEOUT", "60"))
     ai_max_input_chars: int = int(os.getenv("BWC_AI_MAX_INPUT_CHARS", "30000"))
 

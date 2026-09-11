@@ -1,5 +1,40 @@
 # BWC Sales Intelligence
 
+## Remote Ollama through Tailscale userspace networking
+
+When the Ollama server is running on a remote phone or another trusted device,
+BWC can route only its Ollama HTTP traffic through a SOCKS5 proxy that the
+Codespace Tailscale userspace daemon exposes locally.
+
+Example settings:
+
+```env
+BWC_AI_MODE=ollama
+BWC_OLLAMA_URL=http://<PHONE_TAILSCALE_IP>:11434
+BWC_OLLAMA_MODEL=llama3.2:1b
+BWC_OLLAMA_PROXY=socks5h://127.0.0.1:1055
+```
+
+The phone runs Ollama, the Codespace connects through Tailscale, and the
+Codespace Tailscale daemon is configured for userspace networking with
+`--tun=userspace-networking` and `--socks5-server=localhost:1055`.
+BWC uses the configured `BWC_OLLAMA_PROXY` only for Ollama requests in
+`local_ai.py`; other providers such as SearXNG, Jina, Google/Bing/DDG,
+CRM, and the research fetchers continue using their existing networking
+behavior. The Ollama port 11434 should only be reachable on the private
+Tailscale network and must not be exposed publicly. Prefer the phone's
+Tailscale IP instead of a hotspot/private LAN address when the Codespace is remote.
+
+Direct or local Ollama continues to work with:
+
+```env
+BWC_AI_MODE=ollama
+BWC_OLLAMA_URL=http://127.0.0.1:11434
+BWC_OLLAMA_MODEL=llama3.2:1b
+BWC_OLLAMA_PROXY=
+```
+
+
 Sales intelligence and prospect qualification for Brainwave Consulting. The app evaluates a company against BWC's PLM/PDM, ENOVIA, 3DEXPERIENCE, engineering data, MSDS/SDS, and formulation opportunities.
 
 ## Run locally
@@ -61,6 +96,30 @@ The deterministic BWC research and scoring flow remains authoritative. Ollama do
 When `BWC_AI_MODE=none`, the app works exactly as before and requires no local AI service. When `BWC_AI_MODE=ollama`, the UI will show the optional AI section after the deterministic score and sales brief if the configured model is reachable and available.
 
 No API keys are stored in source code. Add provider credentials to `.env` or Streamlit secrets.
+
+## Using Android/Termux Ollama
+
+Ollama can run on an Android phone through Termux. The phone can act as a private inference server for the BWC Sales Intelligence app. A laptop on the same phone hotspot or private network can usually access the phone's private IP address directly, for example `http://172.27.94.123:11434` if the phone is the hotspot gateway. A GitHub Codespace is remote and normally cannot reach that private hotspot address because it runs in the cloud. In that case the repository's configuration keeps `BWC_OLLAMA_URL` configurable so the app can be pointed at a secure private VPN/tunnel or another reachable Ollama host. Never expose port `11434` directly to the public internet. If the secure connection is unavailable, the app continues to use the normal deterministic BWC research and scoring without local AI.
+
+The configuration in the environment file is intentionally flexible:
+
+```env
+BWC_AI_MODE=ollama
+BWC_OLLAMA_URL=https://your-private-endpoint.example
+BWC_OLLAMA_MODEL=llama3.2:1b
+BWC_AI_TIMEOUT=60
+BWC_AI_MAX_INPUT_CHARS=30000
+```
+
+### Troubleshooting
+
+| Problem | Meaning | Solution |
+|---|---|---|
+| `Ollama is not reachable` | The configured endpoint cannot be contacted. | Check the Ollama server, host, port, and network path. |
+| `Model not available` | The configured model is not installed on the Ollama host. | Run `ollama list` on the Ollama host and install the named model. |
+| `Laptop can connect but Codespace cannot` | The Ollama service is only reachable through a local/private network. | Configure a secure private VPN/tunnel or other route reachable from the Codespace. |
+| `Generation timeout` | Model inference is slow or CPU-bound. | Increase `BWC_AI_TIMEOUT` or use a smaller model. |
+| `Connection refused` | Ollama is not listening on the configured address and port. | Check that `ollama serve` is running and the host/port match `BWC_OLLAMA_URL`. |
 
 ## Optional SearXNG
 

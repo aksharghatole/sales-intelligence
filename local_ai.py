@@ -6,6 +6,9 @@ in one place so the existing research and scoring pipeline stays deterministic.
 
 import json
 import logging
+import ipaddress
+import time
+from urllib.parse import urlsplit, urlunsplit
 import requests
 from typing import Any
 
@@ -52,12 +55,239 @@ AI_OUTPUT_SCHEMA = {
 REQUEST_LOGGER = logging.getLogger("bwc.local_ai")
 
 
+def build_ollama_request_proxies() -> dict[str, str] | None:
+    """Return {http, https} proxy mapping only for Ollama requests when configured.
+
+    The proxy is optional and stays localized to local_ai.py. When absent,
+    requests run directly and no application-wide networking behavior changes.
+    """
+    proxy = (settings.ollama_proxy or "").strip()
+    if not proxy:
+        return None
+    return {"http": proxy, "https": proxy}
+
+
+def normalize_ollama_url(raw_url: str | None = None) -> str:
+    """Normalize the configured Ollama endpoint safely.
+
+    - Accepts a configured URL or the current settings value.
+    - Adds a scheme when one is omitted.
+    - Removes credentials and query/fragment fragments.
+    - Keeps the host path only; never stores secrets in logs or returned metadata.
+    """
+    candidate = (raw_url or settings.ollama_url or "http://127.0.0.1:11434").strip()
+    if not candidate:
+        candidate = "http://127.0.0.1:11434"
+
+    parsed = urlsplit(candidate)
+    if not parsed.scheme:
+        candidate = f"http://{candidate}"
+        parsed = urlsplit(candidate)
+
+    scheme = parsed.scheme.lower()
+    host = parsed.hostname or "127.0.0.1"
+    try:
+        port = parsed.port
+    except (ValueError, TypeError):
+        port = None
+
+    # Preserve an explicit port, otherwise stay with the configured URL's scheme
+    # behaviour and attach only a standard unprivileged endpoint default via route.
+    netloc = host
+    if port:
+        netloc = f"{host}:{port}"
+
+    # Remove credentials and query/fragments from the public URL string.
+    safe_path = parsed.path.rstrip("/") if parsed.path else ""
+    return urlunsplit((scheme, netloc, safe_path, "", ""))
+
+
+def is_private_ollama_url(raw_url: str | None = None) -> bool:
+    """Return True when the configured Ollama URL points to localhost/private networks.
+
+    The private/network hint is intentionally diagnostic-only; it should never block the URL.
+    """
+    normalized = normalize_ollama_url(raw_url)
+    host = urlsplit(normalized).hostname or ""
+    if host.lower() in {"localhost", "127.0.0.1", "::1"}:
+        return True
+
+    try:
+        parsed_ip = ipaddress.ip_address(host)
+    except Exception:
+        parsed_ip = None
+
+    if parsed_ip is not None:
+        return parsed_ip.is_private or parsed_ip.is_loopback or parsed_ip.is_link_local or parsed_ip.is_reserved
+
+    return False
+
+
+def classify_ollama_environment(raw_url: str | None = None) -> str:
+    """Return a UI-friendly endpoint environment label: local/private/remote."""
+    normalized = normalize_ollama_url(raw_url)
+    host = urlsplit(normalized).hostname or ""
+    lower = host.lower()
+    if lower in {"localhost", "127.0.0.1", "::1"}:
+        return "local"
+
+    try:
+        parsed_ip = ipaddress.ip_address(host)
+    except Exception:
+        parsed_ip = None
+
+    if parsed_ip is not None:
+        if parsed_ip.is_private or parsed_ip.is_loopback or parsed_ip.is_link_local:
+            return "private"
+
+    return "remote"
+
+
 def ollama_enabled() -> bool:
     """Return True when the application is configured for local Ollama.
 
     The configuration is environment controlled and copied into Settings.
     """
     return settings.ai_mode.lower() == "ollama"
+
+
+def _safe_error_message(message: str) -> str:
+    return message
+
+
+def diagnose_ollama() -> dict:
+    """Return a structured diagnostic describing the configured Ollama endpoint.
+
+    The shape is intentionally stable, includes the configured model, the
+    normalized endpoint, an environment hint, and an error type for UI rendering.
+    """
+    configured = ollama_enabled()
+    url = normalize_ollama_url(settings.ollama_url)
+    environment = classify_ollama_environment(url)
+
+    if not configured:
+        return {
+            "configured": False,
+            "url": url,
+            "reachable": False,
+            "ollama_running": False,
+            "model_available": False,
+            "model": settings.ollama_model,
+            "environment": environment,
+            "message": "Local AI is disabled. Set BWC_AI_MODE=ollama to enable Ollama.",
+            "error_type": "disabled",
+        }
+
+    try:
+        response = requests.get(
+            f"{url.rstrip('/')}/api/tags",
+            timeout=min(settings.ai_timeout, 10),
+            proxies=build_ollama_request_proxies(),
+        )
+        if response.status_code != 200:
+            reason = f"Ollama HTTP error {response.status_code}"
+            payload = {"configured": True, "url": url, "reachable": False, "ollama_running": False, "model_available": False, "model": settings.ollama_model, "environment": environment, "message": reason, "error_type": "http_error"}
+            return payload
+        try:
+            payload = response.json()
+        except Exception:
+            return {
+                "configured": True,
+                "url": url,
+                "reachable": False,
+                "ollama_running": True,
+                "model_available": False,
+                "model": settings.ollama_model,
+                "environment": environment,
+                "message": "Ollama responded with malformed JSON.",
+                "error_type": "malformed_json",
+            }
+
+        names = _safe_model_names(payload)
+        model_found = settings.ollama_model in names
+        if model_found:
+            return {
+                "configured": True,
+                "url": url,
+                "reachable": True,
+                "ollama_running": True,
+                "model_available": True,
+                "model": settings.ollama_model,
+                "environment": environment,
+                "message": "✓ Ollama connected",
+                "error_type": "none",
+            }
+        return {
+            "configured": True,
+            "url": url,
+            "reachable": True,
+            "ollama_running": True,
+            "model_available": False,
+            "model": settings.ollama_model,
+            "environment": environment,
+            "message": "Configured Ollama model was not found.",
+            "error_type": "model_not_found",
+        }
+    except requests.exceptions.ProxyError:
+        return {
+            "configured": True,
+            "url": url,
+            "reachable": False,
+            "ollama_running": False,
+            "model_available": False,
+            "model": settings.ollama_model,
+            "environment": environment,
+            "message": "Ollama HTTP request failed through configured proxy. Check that BWC_OLLAMA_PROXY is valid and the SOCKS5 proxy is running.",
+            "error_type": "proxy_error",
+        }
+    except requests.exceptions.ConnectionError:
+        return {
+            "configured": True,
+            "url": url,
+            "reachable": False,
+            "ollama_running": False,
+            "model_available": False,
+            "model": settings.ollama_model,
+            "environment": environment,
+            "message": "Ollama is not reachable. Check the server and the network path.",
+            "error_type": "connection_refused",
+        }
+    except requests.exceptions.Timeout:
+        return {
+            "configured": True,
+            "url": url,
+            "reachable": False,
+            "ollama_running": False,
+            "model_available": False,
+            "model": settings.ollama_model,
+            "environment": environment,
+            "message": "Ollama request timed out.",
+            "error_type": "timeout",
+        }
+    except requests.exceptions.RequestException as exc:
+        return {
+            "configured": True,
+            "url": url,
+            "reachable": False,
+            "ollama_running": False,
+            "model_available": False,
+            "model": settings.ollama_model,
+            "environment": environment,
+            "message": f"Ollama HTTP request failed: {exc.__class__.__name__}",
+            "error_type": exc.__class__.__name__.lower(),
+        }
+    except Exception:
+        return {
+            "configured": True,
+            "url": url,
+            "reachable": False,
+            "ollama_running": False,
+            "model_available": False,
+            "model": settings.ollama_model,
+            "environment": environment,
+            "message": "Local AI unavailable.",
+            "error_type": "unavailable",
+        }
 
 
 def _ai_disabled_result() -> dict:
@@ -97,63 +327,127 @@ def check_ollama() -> dict:
     """Perform a lightweight health check against Ollama.
 
     Returns a structured dict so Streamlit/UI code can render a soft message.
+    Provides compatibility keys expected by the current UI while exposing
+    structured diagnostics for richer error rendering.
+    """
+    diagnostic = diagnose_ollama()
+    return {
+        "available": diagnostic.get("reachable") and diagnostic.get("model_available"),
+        "model_available": diagnostic.get("model_available", False),
+        "reachable": diagnostic.get("reachable", False),
+        "ollama_running": diagnostic.get("ollama_running", False),
+        "configured": diagnostic.get("configured", False),
+        "url": diagnostic.get("url", normalize_ollama_url(settings.ollama_url)),
+        "model": diagnostic.get("model", settings.ollama_model),
+        "environment": diagnostic.get("environment", classify_ollama_environment()),
+        "message": diagnostic.get("message", "Local AI unavailable"),
+        "error_type": diagnostic.get("error_type", "unknown"),
+    }
+
+
+def test_generation(prompt: str = "Reply with exactly: BWC Ollama connection working.") -> dict:
+    """Perform a tiny generation test, only when the user explicitly requests it.
+
+    Returns a structured dict containing success, response, elapsed seconds,
+    and a user-facing message. It intentionally does not run automatically.
     """
     if not ollama_enabled():
         return {
-            "available": False,
-            "model_available": False,
+            "success": False,
+            "response": "",
+            "elapsed": 0.0,
             "message": "Local AI is disabled. Set BWC_AI_MODE=ollama to enable Ollama.",
+            "error_type": "disabled",
         }
 
-    url = f"{settings.ollama_url.rstrip('/')}/api/tags"
-    try:
-        response = requests.get(url, timeout=min(settings.ai_timeout, 10))
-        if response.status_code != 200:
-            return {
-                "available": False,
-                "model_available": False,
-                "message": "Ollama is not reachable",
-            }
-        try:
-            payload = response.json()
-        except Exception:
-            payload = {}
-        names = _safe_model_names(payload)
-        model_found = settings.ollama_model in names
-        if model_found:
-            return {
-                "available": True,
-                "model_available": True,
-                "message": "✓ Ollama connected",
-            }
+    diag = diagnose_ollama()
+    if not diag.get("configured") or not diag.get("reachable") or not diag.get("model_available"):
         return {
-            "available": True,
-            "model_available": False,
-            "message": "Configured Ollama model was not found",
+            "success": False,
+            "response": "",
+            "elapsed": 0.0,
+            "message": diag.get("message") or "Ollama is not reachable.",
+            "error_type": diag.get("error_type", "unavailable"),
         }
-    except requests.exceptions.ConnectionError:
+
+    url = f"{normalize_ollama_url(settings.ollama_url).rstrip('/')}/api/generate"
+    payload = {
+        "model": settings.ollama_model,
+        "prompt": prompt[:settings.ai_max_input_chars],
+        "stream": False,
+        "options": {"temperature": 0.0},
+    }
+    start = time.perf_counter()
+    try:
+        response = requests.post(
+            url,
+            json=payload,
+            timeout=settings.ai_timeout,
+            proxies=build_ollama_request_proxies(),
+        )
+        response.raise_for_status()
+        data = response.json()
+        text = str(data.get("response", "") or "").strip()
+        elapsed = time.perf_counter() - start
+        if not text:
+            return {
+                "success": False,
+                "response": "",
+                "elapsed": elapsed,
+                "message": "Ollama returned an empty response.",
+                "error_type": "empty_response",
+            }
         return {
-            "available": False,
-            "model_available": False,
-            "message": "Ollama is not reachable",
+            "success": True,
+            "response": text,
+            "elapsed": elapsed,
+            "message": "Ollama response received.",
+            "error_type": "none",
+        }
+    except requests.exceptions.ProxyError:
+        elapsed = time.perf_counter() - start
+        return {
+            "success": False,
+            "response": "",
+            "elapsed": elapsed,
+            "message": "Ollama HTTP request failed through configured proxy. Check that BWC_OLLAMA_PROXY is valid and the SOCKS5 proxy is running.",
+            "error_type": "proxy_error",
         }
     except requests.exceptions.Timeout:
+        elapsed = time.perf_counter() - start
         return {
-            "available": False,
-            "model_available": False,
-            "message": "Ollama request timed out",
+            "success": False,
+            "response": "",
+            "elapsed": elapsed,
+            "message": "Ollama request timed out.",
+            "error_type": "timeout",
         }
-    except requests.exceptions.RequestException:
+    except requests.exceptions.ConnectionError:
+        elapsed = time.perf_counter() - start
         return {
-            "available": False,
-            "model_available": False,
-            "message": "Ollama is not reachable",
+            "success": False,
+            "response": "",
+            "elapsed": elapsed,
+            "message": "Ollama is not reachable.",
+            "error_type": "connection_refused",
+        }
+    except requests.exceptions.RequestException as exc:
+        elapsed = time.perf_counter() - start
+        return {
+            "success": False,
+            "response": "",
+            "elapsed": elapsed,
+            "message": f"Ollama HTTP request failed: {exc.__class__.__name__}",
+            "error_type": exc.__class__.__name__.lower(),
         }
     except Exception:
+        elapsed = time.perf_counter() - start
         return {
-            "available": False,
-            "model_available": False,
-            "message": "Local AI unavailable",
+            "success": False,
+            "response": "",
+            "elapsed": elapsed,
+            "message": "Malformed Ollama response.",
+            "error_type": "malformed_json",
         }
 
 
@@ -165,7 +459,7 @@ def generate_ai(prompt: str, system_prompt: str = "") -> str | None:
     if not ollama_enabled():
         return None
 
-    url = f"{settings.ollama_url.rstrip('/')}/api/generate"
+    url = f"{normalize_ollama_url(settings.ollama_url).rstrip('/')}/api/generate"
     payload = {
         "model": settings.ollama_model,
         "prompt": prompt[:settings.ai_max_input_chars],
@@ -175,11 +469,15 @@ def generate_ai(prompt: str, system_prompt: str = "") -> str | None:
     if system_prompt:
         payload["system"] = system_prompt
 
+    proxies = build_ollama_request_proxies()
     try:
-        response = requests.post(url, json=payload, timeout=settings.ai_timeout)
+        response = requests.post(url, json=payload, timeout=settings.ai_timeout, proxies=proxies)
         response.raise_for_status()
         data = response.json()
         return str(data.get("response", "") or "").strip() or None
+    except requests.exceptions.ProxyError:
+        REQUEST_LOGGER.warning("Ollama HTTP request failed through configured proxy")
+        return None
     except requests.exceptions.Timeout:
         REQUEST_LOGGER.warning("Ollama request timed out")
         return None
